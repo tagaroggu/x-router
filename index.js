@@ -6,11 +6,14 @@ class DataRouter {
     constructor(element, historyMode) {
         this.element = element;
         this.historyMode = historyMode;
-        this.shadowRoot = this.element.attachShadow({ mode: 'open', slotAssignment: 'manual' });
+        this.element.attachShadow({ mode: 'open', slotAssignment: 'manual' });
         this.slot = document.createElement('slot');
-        this.shadowRoot.appendChild(this.slot);
+        this.element.shadowRoot.appendChild(this.slot);
+        this.baseURL = window.location.origin;
 
         this.historyMode.addEventListener('changeState', this);
+
+        this.handleEvent({ type: 'changeState' });
     }
 
     get current() {
@@ -25,34 +28,30 @@ class DataRouter {
     }
 
     /**
-     * @type {ShadowRoot}
-     */
-    shadowRoot;
-
-    /**
      * @type {HTMLSlotElement}
      */
     slot;
 
-    /**
-     * 
-     * @param {Event} event 
-     */
     handleEvent(event) {
         switch (event.type) {
             case 'changeState':
                 const children = /** @type {HTMLElement[]}*/(Array.from(this.element.children));
-                const matches = children.filter((element) => {
-                    if (!element.dataset.route) return false;
+            
+                children.filter((element) => 'activeRoute' in element.dataset)
+                    .forEach((element) => delete element.dataset.activeRoute);
+                let matches = children.filter((element) => {
+                if (!element.dataset.route) return false;
+                    
                     const pattern = new URLPattern({ pathname: element.dataset.route });
-                    return pattern.test(new URL(this.current, window.location.href));
+                    return pattern.test(new URL(this.current, this.baseURL));
                 });
+
                 if (!matches.length) {
-                    this.slot.assign(...Array.from(this.element.children)
-                        .filter(element => element.dataset.defaultRoute));
-                } else {
-                    this.slot.assign(...matches);
+                    matches = children.filter((element) => 'fallbackRoute' in element.dataset);
                 }
+                
+                matches.forEach((element) => {element.dataset.activeRoute = ''});
+                this.slot.assign(...matches);
                 break;
         }
     }
@@ -70,17 +69,6 @@ class DataRouterHistory extends EventTarget {
      * @param {string} arg0
      */
     set current(arg0) {}
-
-    /**
-     * @abstract
-     * @returns {string}
-     */
-    pop() {}
-    /**
-     * @abstract
-     * @param {string} state
-     */
-    push(state) {}
 }
 
 class DataRouterMemoryHistory extends DataRouterHistory {
@@ -97,47 +85,57 @@ class DataRouterMemoryHistory extends DataRouterHistory {
     set current(state) {
         this._current = state;
         this.dispatchEvent(new Event('changeState'));
-    } 
-
-    /**
-     * @override
-     * @returns {string}
-     */
-    pop() {
-        return current
-    }
-
-
-    push(state) {
-        this.current = state;
     }
 }
 
-class DataRouterElement extends HTMLElement {
-    static observedAttributes = ['route']
-    connectedCallback() {
-        if (!this.router) {
-            let mode;
-            switch (this.getAttribute('mode')) {
-                default:
-                    mode = new DataRouterMemoryHistory();
-                    break;
+class DataRouterHashHistory extends DataRouterHistory {
+    constructor() {
+        super();
+        window.addEventListener('hashchange', () => {
+            this.dispatchEvent(new Event('changeState'));
+        });
+    }
+
+    get current() {
+        return window.location.hash.slice(1);
+    }
+
+    set current(state) {
+        window.location.hash = `#${state}`;
+    }
+}
+
+function toElement(mode) {
+    return class extends HTMLElement {
+        connectedCallback() {
+            if (!this.router) {
+                this.router = new DataRouter(this, new mode());
             }
-            this.router = new DataRouter(this, mode);
+            this.router.handleEvent({ type: 'changeState' });
         }
-        this.attributeChangedCallback('route');
-    }
 
-    attributeChangedCallback(name) {
-        switch (name) {
-            case 'route':
-                this.router?.current = this.getAttribute('route');
-                break;
+        /**
+         * @returns {string}
+         */
+        get current() {
+            return this.router.current;
+        }
+
+        /**
+         * @param {string} state
+         */
+        set current(state) {
+            this.router.current = state;
         }
     }
 }
 
-customElements.define('data-router', DataRouterElement)
+const DataRouterMemoryElement = toElement(DataRouterMemoryHistory);
+const DataRouterHashElement = toElement(DataRouterHashHistory);
 
-export { DataRouter }
+customElements.define('data-memory-router', DataRouterMemoryElement);
+customElements.define('data-hash-router', DataRouterHashElement);
+
+export { DataRouter, DataRouterHistory, DataRouterMemoryHistory,
+    DataRouterHashHistory, DataRouterMemoryElement, DataRouterHashElement }
 
